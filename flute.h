@@ -33,6 +33,8 @@
 #ifndef __FLUTE_H__
 #define __FLUTE_H__
 
+#include <ostream>
+
 namespace Flute {
 
 const int FLUTE_ACCURACY = 10; // Default accuracy
@@ -56,9 +58,9 @@ void deleteLUT();
 DTYPE flute_wl(int d, DTYPE x[], DTYPE y[], int acc);
 Tree flute(int d, DTYPE x[], DTYPE y[], int acc);
 DTYPE wirelength(Tree t);
-void printtree(Tree t);
-void plottree(Tree t);
-void write_svg(Tree t, const char *filename);
+void printtree(Tree t, std::ostream &out);
+void plottree(Tree t, std::ostream &out);
+void write_svg(Tree t, std::ostream &out, double Scale = 1.0);
 void free_tree(Tree t);
 
 // Other useful functions

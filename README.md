@@ -17,7 +17,7 @@ The algorithm base is Flute3.1, obtained from FastRoute4.1 version, that was rec
 ### How to Compile
 
 ````
-git clone https://github.com/The-OpenROAD-Project/flute3
+git clone https://github.com/jacky860226/flute3.git
 cd flute3/
 mkdir build
 cd build

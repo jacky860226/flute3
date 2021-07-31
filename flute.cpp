@@ -32,16 +32,16 @@
 
 #include "flute.h"
 #include "flute_parameters.h"
-#include <algorithm>
-#include <ctype.h>
-#include <limits.h>
-#include <math.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <string>
 
-namespace Flute {
+#include <algorithm>
+#include <cctype>
+#include <climits>
+#include <cmath>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <limits>
+#include <string>
 
 #if FLUTE_D <= 7
 #define MGROUP 5040 / 4 // Max. # of groups, 7! = 5040
@@ -53,7 +53,15 @@ namespace Flute {
 #define MGROUP 362880 / 4 // Max. # of groups, 9! = 362880
 #define MPOWV 79          // Max. # of POWVs per group
 #endif
-int numgrp[10] = {0, 0, 0, 0, 6, 30, 180, 1260, 10080, 90720};
+
+namespace Flute {
+extern std::string post9;
+extern std::string powv9;
+} // namespace Flute
+
+namespace {
+
+const int numgrp[10] = {0, 0, 0, 0, 6, 30, 180, 1260, 10080, 90720};
 
 struct csoln {
   unsigned char parent;
@@ -73,14 +81,14 @@ LUT_TYPE LUT;
 NUMSOLN_TYPE numsoln;
 
 struct point {
-  DTYPE x, y;
+  Flute::DTYPE x, y;
   int o;
 };
 
-Tree dmergetree(Tree t1, Tree t2);
-Tree hmergetree(Tree t1, Tree t2, int s[]);
-Tree vmergetree(Tree t1, Tree t2);
-void local_refinement(int deg, Tree *tp, int p);
+Flute::Tree dmergetree(Flute::Tree t1, Flute::Tree t2);
+Flute::Tree hmergetree(Flute::Tree t1, Flute::Tree t2, int s[]);
+Flute::Tree vmergetree(Flute::Tree t1, Flute::Tree t2);
+void local_refinement(int deg, Flute::Tree *tp, int p);
 
 template <class T> inline T ADIFF(T x, T y) {
   if (x > y) {
@@ -179,13 +187,7 @@ static void readLUTfiles(LUT_TYPE LUT, NUMSOLN_TYPE numsoln) {
 
 ////////////////////////////////////////////////////////////////
 
-static void makeLUT(LUT_TYPE &LUT, NUMSOLN_TYPE &numsoln);
-static void deleteLUT(LUT_TYPE &LUT, NUMSOLN_TYPE &numsoln);
-static void initLUT(int to_d, LUT_TYPE LUT, NUMSOLN_TYPE numsoln);
-static void ensureLUT(int d);
 static std::string base64_decode(std::string const &encoded_string);
-static void checkLUT(LUT_TYPE LUT1, NUMSOLN_TYPE numsoln1, LUT_TYPE LUT2,
-                     NUMSOLN_TYPE numsoln2);
 
 // LUTs are initialized to this order at startup.
 static constexpr int lut_initial_d = 8;
@@ -204,31 +206,6 @@ static int lut_valid_d = 0;
 //#define LUT_SOURCE LUT_VAR_CHECK
 #define LUT_SOURCE LUT_VAR
 
-extern std::string post9;
-extern std::string powv9;
-
-void readLUT() {
-  makeLUT(LUT, numsoln);
-
-#if LUT_SOURCE == LUT_FILE
-  readLUTfiles(LUT, numsoln);
-  lut_valid_d = FLUTE_D;
-
-#elif LUT_SOURCE == LUT_VAR
-  // Only init to d=8 on startup because d=9 is big and slow.
-  initLUT(lut_initial_d, LUT, numsoln);
-
-#elif LUT_SOURCE == LUT_VAR_CHECK
-  readLUTfiles(LUT, numsoln);
-  // Temporaries to compare to file results.
-  LUT_TYPE LUT_;
-  NUMSOLN_TYPE numsoln_;
-  makeLUT(LUT_, numsoln_);
-  initLUT(FLUTE_D, LUT_, numsoln_);
-  checkLUT(LUT, numsoln, LUT_, numsoln_);
-#endif
-}
-
 static void makeLUT(LUT_TYPE &LUT, NUMSOLN_TYPE &numsoln) {
   LUT = new struct csoln **[FLUTE_D + 1];
   numsoln = new int *[FLUTE_D + 1];
@@ -237,8 +214,6 @@ static void makeLUT(LUT_TYPE &LUT, NUMSOLN_TYPE &numsoln) {
     numsoln[d] = new int[MGROUP];
   }
 }
-
-void deleteLUT() { deleteLUT(LUT, numsoln); }
 
 static void deleteLUT(LUT_TYPE &LUT, NUMSOLN_TYPE &numsoln) {
   for (int d = 4; d <= FLUTE_D; d++) {
@@ -260,11 +235,11 @@ static unsigned char charNum(unsigned char c) {
 
 // Init LUTs from base64 encoded string variables.
 static void initLUT(int to_d, LUT_TYPE LUT, NUMSOLN_TYPE numsoln) {
-  std::string pwv_string = base64_decode(powv9);
+  std::string pwv_string = base64_decode(Flute::powv9);
   const char *pwv = pwv_string.c_str();
 
 #if FLUTE_ROUTING == 1
-  std::string prt_string = base64_decode(post9);
+  std::string prt_string = base64_decode(Flute::post9);
   const char *prt = prt_string.c_str();
 #endif
 
@@ -453,6 +428,356 @@ static std::string base64_decode(std::string const &encoded_string) {
 }
 
 ////////////////////////////////////////////////////////////////
+
+static int orderx(const void *a, const void *b) {
+  struct point *pa, *pb;
+
+  pa = *(struct point **)a;
+  pb = *(struct point **)b;
+
+  if (pa->x < pb->x)
+    return -1;
+  if (pa->x > pb->x)
+    return 1;
+  return 0;
+}
+
+static int ordery(const void *a, const void *b) {
+  struct point *pa, *pb;
+
+  pa = *(struct point **)a;
+  pb = *(struct point **)b;
+
+  if (pa->y < pb->y)
+    return -1;
+  if (pa->y > pb->y)
+    return 1;
+  return 0;
+}
+
+Flute::Tree dmergetree(Flute::Tree t1, Flute::Tree t2) {
+  int i, d, prev, curr, next, offset1, offset2;
+  Flute::Tree t;
+
+  t.deg = d = t1.deg + t2.deg - 2;
+  t.length = t1.length + t2.length;
+  t.branch = (Flute::Branch *)malloc((2 * d - 2) * sizeof(Flute::Branch));
+  offset1 = t2.deg - 2;
+  offset2 = 2 * t1.deg - 4;
+
+  for (i = 0; i <= t1.deg - 2; i++) {
+    t.branch[i].x = t1.branch[i].x;
+    t.branch[i].y = t1.branch[i].y;
+    t.branch[i].n = t1.branch[i].n + offset1;
+  }
+  for (i = t1.deg - 1; i <= d - 1; i++) {
+    t.branch[i].x = t2.branch[i - t1.deg + 2].x;
+    t.branch[i].y = t2.branch[i - t1.deg + 2].y;
+    t.branch[i].n = t2.branch[i - t1.deg + 2].n + offset2;
+  }
+  for (i = d; i <= d + t1.deg - 3; i++) {
+    t.branch[i].x = t1.branch[i - offset1].x;
+    t.branch[i].y = t1.branch[i - offset1].y;
+    t.branch[i].n = t1.branch[i - offset1].n + offset1;
+  }
+  for (i = d + t1.deg - 2; i <= 2 * d - 3; i++) {
+    t.branch[i].x = t2.branch[i - offset2].x;
+    t.branch[i].y = t2.branch[i - offset2].y;
+    t.branch[i].n = t2.branch[i - offset2].n + offset2;
+  }
+
+  prev = t2.branch[0].n + offset2;
+  curr = t1.branch[t1.deg - 1].n + offset1;
+  next = t.branch[curr].n;
+  while (curr != next) {
+    t.branch[curr].n = prev;
+    prev = curr;
+    curr = next;
+    next = t.branch[curr].n;
+  }
+  t.branch[curr].n = prev;
+
+  return t;
+}
+
+Flute::Tree hmergetree(Flute::Tree t1, Flute::Tree t2, int s[]) {
+  int i, prev, curr, next, extra, offset1, offset2;
+  int p, ii, n1, n2, nn1, nn2;
+  Flute::DTYPE coord1, coord2;
+  Flute::Tree t;
+
+  t.deg = t1.deg + t2.deg - 1;
+  t.length = t1.length + t2.length;
+  t.branch = (Flute::Branch *)malloc((2 * t.deg - 2) * sizeof(Flute::Branch));
+  offset1 = t2.deg - 1;
+  offset2 = 2 * t1.deg - 3;
+
+  p = t1.deg - 1;
+  n1 = n2 = 0;
+  for (i = 0; i < t.deg; i++) {
+    if (s[i] < p) {
+      t.branch[i].x = t1.branch[n1].x;
+      t.branch[i].y = t1.branch[n1].y;
+      t.branch[i].n = t1.branch[n1].n + offset1;
+      n1++;
+    } else if (s[i] > p) {
+      t.branch[i].x = t2.branch[n2].x;
+      t.branch[i].y = t2.branch[n2].y;
+      t.branch[i].n = t2.branch[n2].n + offset2;
+      n2++;
+    } else {
+      t.branch[i].x = t2.branch[n2].x;
+      t.branch[i].y = t2.branch[n2].y;
+      t.branch[i].n = t2.branch[n2].n + offset2;
+      nn1 = n1;
+      nn2 = n2;
+      ii = i;
+      n1++;
+      n2++;
+    }
+  }
+  for (i = t.deg; i <= t.deg + t1.deg - 3; i++) {
+    t.branch[i].x = t1.branch[i - offset1].x;
+    t.branch[i].y = t1.branch[i - offset1].y;
+    t.branch[i].n = t1.branch[i - offset1].n + offset1;
+  }
+  for (i = t.deg + t1.deg - 2; i <= 2 * t.deg - 4; i++) {
+    t.branch[i].x = t2.branch[i - offset2].x;
+    t.branch[i].y = t2.branch[i - offset2].y;
+    t.branch[i].n = t2.branch[i - offset2].n + offset2;
+  }
+  extra = 2 * t.deg - 3;
+  coord1 = t1.branch[t1.branch[nn1].n].y;
+  coord2 = t2.branch[t2.branch[nn2].n].y;
+  if (t2.branch[nn2].y > std::max(coord1, coord2)) {
+    t.branch[extra].y = std::max(coord1, coord2);
+    t.length -= t2.branch[nn2].y - t.branch[extra].y;
+  } else if (t2.branch[nn2].y < std::min(coord1, coord2)) {
+    t.branch[extra].y = std::min(coord1, coord2);
+    t.length -= t.branch[extra].y - t2.branch[nn2].y;
+  } else
+    t.branch[extra].y = t2.branch[nn2].y;
+  t.branch[extra].x = t2.branch[nn2].x;
+  t.branch[extra].n = t.branch[ii].n;
+  t.branch[ii].n = extra;
+
+  prev = extra;
+  curr = t1.branch[nn1].n + offset1;
+  next = t.branch[curr].n;
+  while (curr != next) {
+    t.branch[curr].n = prev;
+    prev = curr;
+    curr = next;
+    next = t.branch[curr].n;
+  }
+  t.branch[curr].n = prev;
+
+  return t;
+}
+
+Flute::Tree vmergetree(Flute::Tree t1, Flute::Tree t2) {
+  int i, prev, curr, next, extra, offset1, offset2;
+  Flute::DTYPE coord1, coord2;
+  Flute::Tree t;
+
+  t.deg = t1.deg + t2.deg - 1;
+  t.length = t1.length + t2.length;
+  t.branch = (Flute::Branch *)malloc((2 * t.deg - 2) * sizeof(Flute::Branch));
+  offset1 = t2.deg - 1;
+  offset2 = 2 * t1.deg - 3;
+
+  for (i = 0; i <= t1.deg - 2; i++) {
+    t.branch[i].x = t1.branch[i].x;
+    t.branch[i].y = t1.branch[i].y;
+    t.branch[i].n = t1.branch[i].n + offset1;
+  }
+  for (i = t1.deg - 1; i <= t.deg - 1; i++) {
+    t.branch[i].x = t2.branch[i - t1.deg + 1].x;
+    t.branch[i].y = t2.branch[i - t1.deg + 1].y;
+    t.branch[i].n = t2.branch[i - t1.deg + 1].n + offset2;
+  }
+  for (i = t.deg; i <= t.deg + t1.deg - 3; i++) {
+    t.branch[i].x = t1.branch[i - offset1].x;
+    t.branch[i].y = t1.branch[i - offset1].y;
+    t.branch[i].n = t1.branch[i - offset1].n + offset1;
+  }
+  for (i = t.deg + t1.deg - 2; i <= 2 * t.deg - 4; i++) {
+    t.branch[i].x = t2.branch[i - offset2].x;
+    t.branch[i].y = t2.branch[i - offset2].y;
+    t.branch[i].n = t2.branch[i - offset2].n + offset2;
+  }
+  extra = 2 * t.deg - 3;
+  coord1 = t1.branch[t1.branch[t1.deg - 1].n].x;
+  coord2 = t2.branch[t2.branch[0].n].x;
+  if (t2.branch[0].x > std::max(coord1, coord2)) {
+    t.branch[extra].x = std::max(coord1, coord2);
+    t.length -= t2.branch[0].x - t.branch[extra].x;
+  } else if (t2.branch[0].x < std::min(coord1, coord2)) {
+    t.branch[extra].x = std::min(coord1, coord2);
+    t.length -= t.branch[extra].x - t2.branch[0].x;
+  } else
+    t.branch[extra].x = t2.branch[0].x;
+  t.branch[extra].y = t2.branch[0].y;
+  t.branch[extra].n = t.branch[t1.deg - 1].n;
+  t.branch[t1.deg - 1].n = extra;
+
+  prev = extra;
+  curr = t1.branch[t1.deg - 1].n + offset1;
+  next = t.branch[curr].n;
+  while (curr != next) {
+    t.branch[curr].n = prev;
+    prev = curr;
+    curr = next;
+    next = t.branch[curr].n;
+  }
+  t.branch[curr].n = prev;
+
+  return t;
+}
+
+void local_refinement(int deg, Flute::Tree *tp, int p) {
+  int d, dd, i, ii, j, prev, curr, next, root;
+  int *SteinerPin, *index, *ss, degree;
+  Flute::DTYPE *x, *xs, *ys;
+  Flute::Tree tt;
+
+  degree = deg + 1;
+  SteinerPin = (int *)malloc(sizeof(int) * (2 * degree));
+  index = (int *)malloc(sizeof(int) * (2 * degree));
+  x = (Flute::DTYPE *)malloc(sizeof(Flute::DTYPE) * (degree));
+  xs = (Flute::DTYPE *)malloc(sizeof(Flute::DTYPE) * (degree));
+  ys = (Flute::DTYPE *)malloc(sizeof(Flute::DTYPE) * (degree));
+  ss = (Flute::DTYPE *)malloc(sizeof(Flute::DTYPE) * (degree));
+
+  d = tp->deg;
+  root = tp->branch[p].n;
+
+  // Reverse edges to point to root
+  prev = root;
+  curr = tp->branch[prev].n;
+  next = tp->branch[curr].n;
+  while (curr != next) {
+    tp->branch[curr].n = prev;
+    prev = curr;
+    curr = next;
+    next = tp->branch[curr].n;
+  }
+  tp->branch[curr].n = prev;
+  tp->branch[root].n = root;
+
+  // Find Steiner nodes that are at pins
+  for (i = d; i <= 2 * d - 3; i++)
+    SteinerPin[i] = -1;
+  for (i = 0; i < d; i++) {
+    next = tp->branch[i].n;
+    if (tp->branch[i].x == tp->branch[next].x &&
+        tp->branch[i].y == tp->branch[next].y)
+      SteinerPin[next] = i; // Steiner 'next' at Pin 'i'
+  }
+  SteinerPin[root] = p;
+
+  // Find pins that are directly connected to root
+  dd = 0;
+  for (i = 0; i < d; i++) {
+    curr = tp->branch[i].n;
+    if (SteinerPin[curr] == i)
+      curr = tp->branch[curr].n;
+    while (SteinerPin[curr] < 0)
+      curr = tp->branch[curr].n;
+    if (curr == root) {
+      x[dd] = tp->branch[i].x;
+      if (SteinerPin[tp->branch[i].n] == i && tp->branch[i].n != root)
+        index[dd++] = tp->branch[i].n; // Steiner node
+      else
+        index[dd++] = i; // Pin
+    }
+  }
+
+  if (4 <= dd && dd <= FLUTE_D) {
+    // Find Steiner nodes that are directly connected to root
+    ii = dd;
+    for (i = 0; i < dd; i++) {
+      curr = tp->branch[index[i]].n;
+      while (SteinerPin[curr] < 0) {
+        index[ii++] = curr;
+        SteinerPin[curr] = INT_MAX;
+        curr = tp->branch[curr].n;
+      }
+    }
+    index[ii] = root;
+
+    for (ii = 0; ii < dd; ii++) {
+      ss[ii] = 0;
+      for (j = 0; j < ii; j++)
+        if (x[j] < x[ii])
+          ss[ii]++;
+      for (j = ii + 1; j < dd; j++)
+        if (x[j] <= x[ii])
+          ss[ii]++;
+      xs[ss[ii]] = x[ii];
+      ys[ii] = tp->branch[index[ii]].y;
+    }
+
+    tt = Flute::flutes_LD(dd, xs, ys, ss);
+
+    // Find new wirelength
+    tp->length += tt.length;
+    for (ii = 0; ii < 2 * dd - 3; ii++) {
+      i = index[ii];
+      j = tp->branch[i].n;
+      tp->length -= ADIFF(tp->branch[i].x, tp->branch[j].x) +
+                    ADIFF(tp->branch[i].y, tp->branch[j].y);
+    }
+
+    // Copy tt into t
+    for (ii = 0; ii < dd; ii++) {
+      tp->branch[index[ii]].n = index[tt.branch[ii].n];
+    }
+    for (; ii <= 2 * dd - 3; ii++) {
+      tp->branch[index[ii]].x = tt.branch[ii].x;
+      tp->branch[index[ii]].y = tt.branch[ii].y;
+      tp->branch[index[ii]].n = index[tt.branch[ii].n];
+    }
+    free(tt.branch);
+  }
+
+  free(SteinerPin);
+  free(index);
+  free(x);
+  free(xs);
+  free(ys);
+  free(ss);
+
+  return;
+}
+
+} // namespace
+
+namespace Flute {
+
+void readLUT() {
+  makeLUT(LUT, numsoln);
+
+#if LUT_SOURCE == LUT_FILE
+  readLUTfiles(LUT, numsoln);
+  lut_valid_d = FLUTE_D;
+
+#elif LUT_SOURCE == LUT_VAR
+  // Only init to d=8 on startup because d=9 is big and slow.
+  initLUT(lut_initial_d, LUT, numsoln);
+
+#elif LUT_SOURCE == LUT_VAR_CHECK
+  readLUTfiles(LUT, numsoln);
+  // Temporaries to compare to file results.
+  LUT_TYPE LUT_;
+  NUMSOLN_TYPE numsoln_;
+  makeLUT(LUT_, numsoln_);
+  initLUT(FLUTE_D, LUT_, numsoln_);
+  checkLUT(LUT, numsoln, LUT_, numsoln_);
+#endif
+}
+
+void deleteLUT() { deleteLUT(LUT, numsoln); }
 
 DTYPE flute_wl(int d, DTYPE x[], DTYPE y[], int acc) {
   DTYPE minval, l, xu, xl, yu, yl;
@@ -947,32 +1272,6 @@ DTYPE flutes_wl_MD(int d, DTYPE xs[], DTYPE ys[], int s[], int acc) {
   free(s1);
   free(s2);
   return return_val;
-}
-
-static int orderx(const void *a, const void *b) {
-  struct point *pa, *pb;
-
-  pa = *(struct point **)a;
-  pb = *(struct point **)b;
-
-  if (pa->x < pb->x)
-    return -1;
-  if (pa->x > pb->x)
-    return 1;
-  return 0;
-}
-
-static int ordery(const void *a, const void *b) {
-  struct point *pa, *pb;
-
-  pa = *(struct point **)a;
-  pb = *(struct point **)b;
-
-  if (pa->y < pb->y)
-    return -1;
-  if (pa->y > pb->y)
-    return 1;
-  return 0;
 }
 
 Tree flute(int d, DTYPE x[], DTYPE y[], int acc) {
@@ -1644,302 +1943,6 @@ inline Tree flutes_LMD(int d, DTYPE xs[], DTYPE ys[], int s[], int acc) {
   }
 }
 
-Tree dmergetree(Tree t1, Tree t2) {
-  int i, d, prev, curr, next, offset1, offset2;
-  Tree t;
-
-  t.deg = d = t1.deg + t2.deg - 2;
-  t.length = t1.length + t2.length;
-  t.branch = (Branch *)malloc((2 * d - 2) * sizeof(Branch));
-  offset1 = t2.deg - 2;
-  offset2 = 2 * t1.deg - 4;
-
-  for (i = 0; i <= t1.deg - 2; i++) {
-    t.branch[i].x = t1.branch[i].x;
-    t.branch[i].y = t1.branch[i].y;
-    t.branch[i].n = t1.branch[i].n + offset1;
-  }
-  for (i = t1.deg - 1; i <= d - 1; i++) {
-    t.branch[i].x = t2.branch[i - t1.deg + 2].x;
-    t.branch[i].y = t2.branch[i - t1.deg + 2].y;
-    t.branch[i].n = t2.branch[i - t1.deg + 2].n + offset2;
-  }
-  for (i = d; i <= d + t1.deg - 3; i++) {
-    t.branch[i].x = t1.branch[i - offset1].x;
-    t.branch[i].y = t1.branch[i - offset1].y;
-    t.branch[i].n = t1.branch[i - offset1].n + offset1;
-  }
-  for (i = d + t1.deg - 2; i <= 2 * d - 3; i++) {
-    t.branch[i].x = t2.branch[i - offset2].x;
-    t.branch[i].y = t2.branch[i - offset2].y;
-    t.branch[i].n = t2.branch[i - offset2].n + offset2;
-  }
-
-  prev = t2.branch[0].n + offset2;
-  curr = t1.branch[t1.deg - 1].n + offset1;
-  next = t.branch[curr].n;
-  while (curr != next) {
-    t.branch[curr].n = prev;
-    prev = curr;
-    curr = next;
-    next = t.branch[curr].n;
-  }
-  t.branch[curr].n = prev;
-
-  return t;
-}
-
-Tree hmergetree(Tree t1, Tree t2, int s[]) {
-  int i, prev, curr, next, extra, offset1, offset2;
-  int p, ii, n1, n2, nn1, nn2;
-  DTYPE coord1, coord2;
-  Tree t;
-
-  t.deg = t1.deg + t2.deg - 1;
-  t.length = t1.length + t2.length;
-  t.branch = (Branch *)malloc((2 * t.deg - 2) * sizeof(Branch));
-  offset1 = t2.deg - 1;
-  offset2 = 2 * t1.deg - 3;
-
-  p = t1.deg - 1;
-  n1 = n2 = 0;
-  for (i = 0; i < t.deg; i++) {
-    if (s[i] < p) {
-      t.branch[i].x = t1.branch[n1].x;
-      t.branch[i].y = t1.branch[n1].y;
-      t.branch[i].n = t1.branch[n1].n + offset1;
-      n1++;
-    } else if (s[i] > p) {
-      t.branch[i].x = t2.branch[n2].x;
-      t.branch[i].y = t2.branch[n2].y;
-      t.branch[i].n = t2.branch[n2].n + offset2;
-      n2++;
-    } else {
-      t.branch[i].x = t2.branch[n2].x;
-      t.branch[i].y = t2.branch[n2].y;
-      t.branch[i].n = t2.branch[n2].n + offset2;
-      nn1 = n1;
-      nn2 = n2;
-      ii = i;
-      n1++;
-      n2++;
-    }
-  }
-  for (i = t.deg; i <= t.deg + t1.deg - 3; i++) {
-    t.branch[i].x = t1.branch[i - offset1].x;
-    t.branch[i].y = t1.branch[i - offset1].y;
-    t.branch[i].n = t1.branch[i - offset1].n + offset1;
-  }
-  for (i = t.deg + t1.deg - 2; i <= 2 * t.deg - 4; i++) {
-    t.branch[i].x = t2.branch[i - offset2].x;
-    t.branch[i].y = t2.branch[i - offset2].y;
-    t.branch[i].n = t2.branch[i - offset2].n + offset2;
-  }
-  extra = 2 * t.deg - 3;
-  coord1 = t1.branch[t1.branch[nn1].n].y;
-  coord2 = t2.branch[t2.branch[nn2].n].y;
-  if (t2.branch[nn2].y > std::max(coord1, coord2)) {
-    t.branch[extra].y = std::max(coord1, coord2);
-    t.length -= t2.branch[nn2].y - t.branch[extra].y;
-  } else if (t2.branch[nn2].y < std::min(coord1, coord2)) {
-    t.branch[extra].y = std::min(coord1, coord2);
-    t.length -= t.branch[extra].y - t2.branch[nn2].y;
-  } else
-    t.branch[extra].y = t2.branch[nn2].y;
-  t.branch[extra].x = t2.branch[nn2].x;
-  t.branch[extra].n = t.branch[ii].n;
-  t.branch[ii].n = extra;
-
-  prev = extra;
-  curr = t1.branch[nn1].n + offset1;
-  next = t.branch[curr].n;
-  while (curr != next) {
-    t.branch[curr].n = prev;
-    prev = curr;
-    curr = next;
-    next = t.branch[curr].n;
-  }
-  t.branch[curr].n = prev;
-
-  return t;
-}
-
-Tree vmergetree(Tree t1, Tree t2) {
-  int i, prev, curr, next, extra, offset1, offset2;
-  DTYPE coord1, coord2;
-  Tree t;
-
-  t.deg = t1.deg + t2.deg - 1;
-  t.length = t1.length + t2.length;
-  t.branch = (Branch *)malloc((2 * t.deg - 2) * sizeof(Branch));
-  offset1 = t2.deg - 1;
-  offset2 = 2 * t1.deg - 3;
-
-  for (i = 0; i <= t1.deg - 2; i++) {
-    t.branch[i].x = t1.branch[i].x;
-    t.branch[i].y = t1.branch[i].y;
-    t.branch[i].n = t1.branch[i].n + offset1;
-  }
-  for (i = t1.deg - 1; i <= t.deg - 1; i++) {
-    t.branch[i].x = t2.branch[i - t1.deg + 1].x;
-    t.branch[i].y = t2.branch[i - t1.deg + 1].y;
-    t.branch[i].n = t2.branch[i - t1.deg + 1].n + offset2;
-  }
-  for (i = t.deg; i <= t.deg + t1.deg - 3; i++) {
-    t.branch[i].x = t1.branch[i - offset1].x;
-    t.branch[i].y = t1.branch[i - offset1].y;
-    t.branch[i].n = t1.branch[i - offset1].n + offset1;
-  }
-  for (i = t.deg + t1.deg - 2; i <= 2 * t.deg - 4; i++) {
-    t.branch[i].x = t2.branch[i - offset2].x;
-    t.branch[i].y = t2.branch[i - offset2].y;
-    t.branch[i].n = t2.branch[i - offset2].n + offset2;
-  }
-  extra = 2 * t.deg - 3;
-  coord1 = t1.branch[t1.branch[t1.deg - 1].n].x;
-  coord2 = t2.branch[t2.branch[0].n].x;
-  if (t2.branch[0].x > std::max(coord1, coord2)) {
-    t.branch[extra].x = std::max(coord1, coord2);
-    t.length -= t2.branch[0].x - t.branch[extra].x;
-  } else if (t2.branch[0].x < std::min(coord1, coord2)) {
-    t.branch[extra].x = std::min(coord1, coord2);
-    t.length -= t.branch[extra].x - t2.branch[0].x;
-  } else
-    t.branch[extra].x = t2.branch[0].x;
-  t.branch[extra].y = t2.branch[0].y;
-  t.branch[extra].n = t.branch[t1.deg - 1].n;
-  t.branch[t1.deg - 1].n = extra;
-
-  prev = extra;
-  curr = t1.branch[t1.deg - 1].n + offset1;
-  next = t.branch[curr].n;
-  while (curr != next) {
-    t.branch[curr].n = prev;
-    prev = curr;
-    curr = next;
-    next = t.branch[curr].n;
-  }
-  t.branch[curr].n = prev;
-
-  return t;
-}
-
-void local_refinement(int deg, Tree *tp, int p) {
-  int d, dd, i, ii, j, prev, curr, next, root;
-  int *SteinerPin, *index, *ss, degree;
-  DTYPE *x, *xs, *ys;
-  Tree tt;
-
-  degree = deg + 1;
-  SteinerPin = (int *)malloc(sizeof(int) * (2 * degree));
-  index = (int *)malloc(sizeof(int) * (2 * degree));
-  x = (DTYPE *)malloc(sizeof(DTYPE) * (degree));
-  xs = (DTYPE *)malloc(sizeof(DTYPE) * (degree));
-  ys = (DTYPE *)malloc(sizeof(DTYPE) * (degree));
-  ss = (DTYPE *)malloc(sizeof(DTYPE) * (degree));
-
-  d = tp->deg;
-  root = tp->branch[p].n;
-
-  // Reverse edges to point to root
-  prev = root;
-  curr = tp->branch[prev].n;
-  next = tp->branch[curr].n;
-  while (curr != next) {
-    tp->branch[curr].n = prev;
-    prev = curr;
-    curr = next;
-    next = tp->branch[curr].n;
-  }
-  tp->branch[curr].n = prev;
-  tp->branch[root].n = root;
-
-  // Find Steiner nodes that are at pins
-  for (i = d; i <= 2 * d - 3; i++)
-    SteinerPin[i] = -1;
-  for (i = 0; i < d; i++) {
-    next = tp->branch[i].n;
-    if (tp->branch[i].x == tp->branch[next].x &&
-        tp->branch[i].y == tp->branch[next].y)
-      SteinerPin[next] = i; // Steiner 'next' at Pin 'i'
-  }
-  SteinerPin[root] = p;
-
-  // Find pins that are directly connected to root
-  dd = 0;
-  for (i = 0; i < d; i++) {
-    curr = tp->branch[i].n;
-    if (SteinerPin[curr] == i)
-      curr = tp->branch[curr].n;
-    while (SteinerPin[curr] < 0)
-      curr = tp->branch[curr].n;
-    if (curr == root) {
-      x[dd] = tp->branch[i].x;
-      if (SteinerPin[tp->branch[i].n] == i && tp->branch[i].n != root)
-        index[dd++] = tp->branch[i].n; // Steiner node
-      else
-        index[dd++] = i; // Pin
-    }
-  }
-
-  if (4 <= dd && dd <= FLUTE_D) {
-    // Find Steiner nodes that are directly connected to root
-    ii = dd;
-    for (i = 0; i < dd; i++) {
-      curr = tp->branch[index[i]].n;
-      while (SteinerPin[curr] < 0) {
-        index[ii++] = curr;
-        SteinerPin[curr] = INT_MAX;
-        curr = tp->branch[curr].n;
-      }
-    }
-    index[ii] = root;
-
-    for (ii = 0; ii < dd; ii++) {
-      ss[ii] = 0;
-      for (j = 0; j < ii; j++)
-        if (x[j] < x[ii])
-          ss[ii]++;
-      for (j = ii + 1; j < dd; j++)
-        if (x[j] <= x[ii])
-          ss[ii]++;
-      xs[ss[ii]] = x[ii];
-      ys[ii] = tp->branch[index[ii]].y;
-    }
-
-    tt = flutes_LD(dd, xs, ys, ss);
-
-    // Find new wirelength
-    tp->length += tt.length;
-    for (ii = 0; ii < 2 * dd - 3; ii++) {
-      i = index[ii];
-      j = tp->branch[i].n;
-      tp->length -= ADIFF(tp->branch[i].x, tp->branch[j].x) +
-                    ADIFF(tp->branch[i].y, tp->branch[j].y);
-    }
-
-    // Copy tt into t
-    for (ii = 0; ii < dd; ii++) {
-      tp->branch[index[ii]].n = index[tt.branch[ii].n];
-    }
-    for (; ii <= 2 * dd - 3; ii++) {
-      tp->branch[index[ii]].x = tt.branch[ii].x;
-      tp->branch[index[ii]].y = tt.branch[ii].y;
-      tp->branch[index[ii]].n = index[tt.branch[ii].n];
-    }
-    free(tt.branch);
-  }
-
-  free(SteinerPin);
-  free(index);
-  free(x);
-  free(xs);
-  free(ys);
-  free(ss);
-
-  return;
-}
-
 DTYPE wirelength(Tree t) {
   int i, j;
   DTYPE l = 0;
@@ -1953,63 +1956,62 @@ DTYPE wirelength(Tree t) {
   return l;
 }
 
-void printtree(Tree t) {
+void printtree(Tree t, std::ostream &out) {
   int i;
-
-  for (i = 0; i < t.deg; i++)
-    printf(" %-2d:  x=%4g  y=%4g  e=%d\n", i, (float)t.branch[i].x,
-           (float)t.branch[i].y, t.branch[i].n);
-  for (i = t.deg; i < 2 * t.deg - 2; i++)
-    printf("s%-2d:  x=%4g  y=%4g  e=%d\n", i, (float)t.branch[i].x,
-           (float)t.branch[i].y, t.branch[i].n);
-  printf("\n");
+  static char buffer[200];
+  for (i = 0; i < t.deg; i++) {
+    sprintf(buffer, " %-2d:  x=%4g  y=%4g  e=%d\n", i, (float)t.branch[i].x,
+            (float)t.branch[i].y, t.branch[i].n);
+    out << buffer;
+  }
+  for (i = t.deg; i < 2 * t.deg - 2; i++) {
+    sprintf(buffer, "s%-2d:  x=%4g  y=%4g  e=%d\n", i, (float)t.branch[i].x,
+            (float)t.branch[i].y, t.branch[i].n);
+    out << buffer;
+  }
+  out << '\n';
 }
 
 // Output in a format that can be plotted by gnuplot
-void plottree(Tree t) {
+void plottree(Tree t, std::ostream &out) {
   int i;
-
   for (i = 0; i < 2 * t.deg - 2; i++) {
-    printf("%d %d\n", t.branch[i].x, t.branch[i].y);
-    printf("%d %d\n\n", t.branch[t.branch[i].n].x, t.branch[t.branch[i].n].y);
+    out << t.branch[i].x << ' ' << t.branch[i].y << '\n';
+    out << t.branch[t.branch[i].n].x << ' ' << t.branch[t.branch[i].n].y
+        << "\n\n";
   }
 }
 
 // Write svg file viewable in a web browser.
-void write_svg(Tree t, const char *filename) {
-  int x_min = INT_MAX;
-  int y_min = INT_MAX;
-  int x_max = INT_MIN;
-  int y_max = INT_MIN;
+void write_svg(Tree t, std::ostream &out, double Scale) {
+  int X_min = std::numeric_limits<int>::max();
+  int Y_min = std::numeric_limits<int>::max();
+  int X_max = std::numeric_limits<int>::min();
+  int Y_max = std::numeric_limits<int>::min();
   for (int i = 0; i < 2 * t.deg - 2; i++) {
-    x_min = std::min(x_min, t.branch[i].x);
-    y_min = std::min(y_min, t.branch[i].y);
-    x_max = std::max(x_max, t.branch[i].x);
-    y_max = std::max(y_max, t.branch[i].y);
+    X_min = std::min(X_min, t.branch[i].x);
+    Y_min = std::min(Y_min, t.branch[i].y);
+    X_max = std::max(X_max, t.branch[i].x);
+    Y_max = std::max(Y_max, t.branch[i].y);
   }
 
-  int dx = x_max - x_min;
-  int dy = y_max - y_min;
-  const int sz = std::max(std::max(dx, dy) / 400, 1);
-  const int hsz = sz / 2;
+  int Dx = X_max - X_min;
+  int Dy = Y_max - Y_min;
 
-  FILE *stream = fopen(filename, "w");
-  if (stream) {
-    fprintf(stream,
-            "<svg xmlns=\"http://www.w3.org/2000/svg\" "
-            "viewBox=\"%d %d %d %d\">\n",
-            x_min, y_min, dx, dy);
+  const double StrokeWidth = 1;
 
-    for (int i = 0; i < 2 * t.deg - 2; i++) {
-      fprintf(stream,
-              "<line x1=\"%d\" y1=\"%d\" x2=\"%d\" y2=\"%d\" "
-              "style=\"stroke: black; stroke-width: %d\"/>\n",
-              t.branch[i].x, t.branch[i].y, t.branch[t.branch[i].n].x,
-              t.branch[t.branch[i].n].y, hsz / 2);
-    }
-    fprintf(stream, "</svg>\n");
-    fclose(stream);
+  out << "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\""
+      << (X_min - 1) * Scale << ' ' << (Y_min - 1) * Scale << ' '
+      << (Dx + 2) * Scale << ' ' << (Dy + 2) * Scale << "\""
+      << " style=\"width:100%\" stroke=\"black\" stroke-width=\"" << StrokeWidth
+      << "\">\n";
+  for (int i = 0; i < 2 * t.deg - 2; i++) {
+    out << "<line x1=\"" << t.branch[i].x * Scale << "\" y1=\""
+        << t.branch[i].y * Scale << "\" x2=\""
+        << t.branch[t.branch[i].n].x * Scale << "\" y2=\""
+        << t.branch[t.branch[i].n].y * Scale << "\"/>\n";
   }
+  out << "</svg>\n";
 }
 
 void free_tree(Tree t) {
